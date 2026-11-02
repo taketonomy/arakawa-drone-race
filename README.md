@@ -2,6 +2,9 @@
 
 *Arakawa Drone Race — the course is designed by Z3.* Built for **Built with Claude: Japan 2026** (Nov 2–10, 2026).
 
+- **デモ**：https://taketonomy.github.io/arakawa-drone-race/ （地図の上で機体が飛び、スライダーで sat/unsat が切り替わる）
+- **スライド**：https://claude.ai/artifact/2YrbmdVz3ypLePhnm6kR8c
+
 足立区を流れる荒川の上で（架空の）ドローンレースを開くとしたら、どんなコースなら安全で、ルールに合っているか。
 条件を論理式で書き、**Z3 に条件を満たすコースと開催日を探させ**、2D の地図の上で機体を飛ばして見せます。
 条件を厳しくすると「そんなコースは存在しない」と証明され（unsat）、どの条件同士がぶつかったかを示します。
