@@ -16,13 +16,12 @@ from shapely.geometry import Point, mapping
 
 sys.path.insert(0, str(Path(__file__).parent))
 from geo import LocalProj, bridges_from_overpass, build_reach, flight_plan_shapes, water_from_overpass  # noqa: E402
-from solver import LABELS, Params, solve  # noqa: E402
+from solver import LABELS, PLAN_BUFFER, Params, solve, verify_path  # noqa: E402
 from fetch_osm import BBOX  # noqa: E402
 from shapely.geometry import box  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 BANKS = [30, 40, 50, 60, 70, 80, 100]   # C2 distances offered on the slider (m)
-PLAN_BUFFER = 50.0                        # a gate must stay this far from an existing plan's area (m)
 
 
 def weekend_slots(start: datetime, end: datetime, hour: int = 10, hours: int = 2):
@@ -87,10 +86,17 @@ def main(argv=None):
 
     scenarios = []
     for bank in BANKS:
-        r = solve(reach, Params(bank=bank), blocked)
-        sc = {"bank": bank, "status": r.status, "core": [LABELS.get(c, c) for c in r.core], "gates": r.gates}
+        p = Params(bank=bank)
+        r = solve(reach, p, blocked)
+        sc = {"bank": bank, "status": r.status, "core": [LABELS.get(c, c) for c in r.core], "gates": r.gates,
+              "path": r.path, "back": r.back}
         if r.slot is not None:
             sa, sb = slots[r.slot]
+            active = [poly for _, poly, a, b, _ in over_reach if a < sb and sa < b]
+            bad = verify_path(reach, r.gates, p, plans=active)
+            if bad:
+                sys.exit(f"bank {bank} m: the solved path fails the geometric check: {bad}")
+            sc["verified"] = True
             sc["slot"] = {"start": sa.isoformat(timespec="minutes"), "end": sb.isoformat(timespec="minutes"),
                           "skipped": sum(1 for n in per_slot[: r.slot] if n)}
         scenarios.append(sc)

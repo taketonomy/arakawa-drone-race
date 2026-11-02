@@ -2,6 +2,12 @@
 
 Every condition is added with a name (assert_and_track), so when no course exists
 Z3 can report which conditions clash (the unsat core).
+
+C1-C8 constrain the gates. P1-P3 constrain the flight path between them: the drone flies
+from gate to gate along a straight line in river coordinates, d(k) linear in the station
+index k, passing every station (every `reach.step` metres) and then returns along the
+center line (d = 0). Z3 proves P1-P3 at every station; `verify_path` then re-checks the
+actual polyline with exact geometry (shapely), independently of the Z3 model.
 """
 from __future__ import annotations
 
@@ -11,6 +17,8 @@ from dataclasses import dataclass, field
 import z3
 
 from geo import Reach
+
+PLAN_BUFFER = 50.0   # a course must stay this far from an existing plan's area (m)
 
 # Human-readable names for the tracked conditions (used in the unsat core).
 LABELS = {
@@ -22,6 +30,9 @@ LABELS = {
     "C6": "C6 左右に振る（スラローム）",
     "C7": "C7 既存の飛行計画と時間・場所が重ならない",
     "C8": "C8 コース全体の長さ",
+    "P1": "P1 ゲートの間の経路も水面の上で、岸から C2 の距離を保つ",
+    "P2": "P2 経路が橋に近づかない（橋の下をくぐらない）",
+    "P3": "P3 経路が既存の飛行計画と時間・場所で重ならない",
 }
 
 
@@ -37,6 +48,7 @@ class Params:
     span_max: float = 1800.0
     alt_min: int = 5            # C4
     alt_max: int = 30
+    path: bool = True           # add P1-P3 (False = gates only, for comparison)
 
 
 @dataclass
@@ -45,6 +57,8 @@ class Result:
     core: list[str] = field(default_factory=list)
     gates: list[dict] = field(default_factory=list)
     slot: int | None = None
+    path: list[list[float]] = field(default_factory=list)   # [lat, lon] gate 1 -> gate N, every station
+    back: list[list[float]] = field(default_factory=list)   # [lat, lon] return leg on the center line
 
 
 def solve(reach: Reach, params: Params, blocked: list[set[int]] | None = None) -> Result:
@@ -66,13 +80,13 @@ def solve(reach: Reach, params: Params, blocked: list[set[int]] | None = None) -
         base += [k[i] >= 0, k[i] < M]
 
     # C1 / C2: over water, and away from the banks.
+    lims = [math.floor(s.halfwidth - params.bank) for s in st]   # round inward (whole metres)
     c1, c2 = [], []
     for i in range(N):
         for j, s in enumerate(st):
             hw = math.floor(s.halfwidth)  # round inward so whole-metre gates stay over the water
             c1.append(z3.Implies(k[i] == j, z3.And(d[i] <= hw, d[i] >= -hw)))
-            lim = math.floor(s.halfwidth - params.bank)
-            c2.append(z3.Implies(k[i] == j, z3.And(d[i] <= lim, d[i] >= -lim)))
+            c2.append(z3.Implies(k[i] == j, z3.And(d[i] <= lims[j], d[i] >= -lims[j])))
     track("C1", z3.And(c1))
     track("C2", z3.And(c2))
 
@@ -106,6 +120,35 @@ def solve(reach: Reach, params: Params, blocked: list[set[int]] | None = None) -
     span = (k[N - 1] - k[0]) * step
     track("C8", z3.And(span >= params.span_min, span <= params.span_max))
 
+    if params.path:
+        # The path covers every station from k[0] to k[N-1] (gate legs and the return leg).
+        def on_path(j):
+            return z3.And(k[0] <= j, j <= k[N - 1])
+
+        # P1: on the leg from gate i to gate i+1, d(j) lies between d[i] and d[i+1], so
+        # |d(j)| <= max(|d[i]|, |d[i+1]|). Requiring both ends to fit within lims[j] at every
+        # station j on the leg is therefore sufficient, and stays linear. The return leg
+        # (d = 0) and the sideways moves at the two ends are covered too, because they need
+        # 0 <= lims[j] and |d| <= lims[k] respectively, which these constraints imply.
+        p1 = []
+        for i in range(N - 1):
+            for j in range(M):
+                fit = z3.And(d[i] <= lims[j], d[i] >= -lims[j], d[i + 1] <= lims[j], d[i + 1] >= -lims[j])
+                p1.append(z3.Implies(z3.And(k[i] <= j, j <= k[i + 1]), fit))
+        track("P1", z3.And(p1))
+
+        # P2: no station whose whole cross-section (|d| <= halfwidth) comes within
+        # params.bridge of a bridge may lie on the path.
+        ban = bridge_stations(reach, params.bridge)
+        track("P2", z3.And([z3.Not(on_path(j)) for j in ban]) if ban else z3.BoolVal(True))
+
+        # P3: in the chosen slot, no blocked station on the path. A station is blocked when
+        # any point of its cross-section is near a plan, so this covers every path point.
+        if blocked:
+            p3 = [z3.Implies(slot == jj, z3.And([z3.Not(on_path(b)) for b in sorted(bset)]))
+                  for jj, bset in enumerate(blocked) if bset]
+            track("P3", z3.And(p3) if p3 else z3.BoolVal(True))
+
     # 1) Is there any course at all? If not, ask for a minimal set of clashing conditions.
     chk = z3.Solver()
     chk.set("core.minimize", True)
@@ -131,7 +174,76 @@ def solve(reach: Reach, params: Params, blocked: list[set[int]] | None = None) -
         lon, lat = reach.point_ll(ki, di)
         gates.append({"i": i + 1, "k": ki, "s": round(st[ki].s, 1), "d": di,
                       "alt": m.eval(h[i]).as_long(), "lat": lat, "lon": lon})
-    return Result(status="sat", gates=gates, slot=m.eval(slot).as_long())
+    fwd, back = course_path(reach, gates)
+
+    def ll(pts):
+        return [[round(lat, 7), round(lon, 7)] for lon, lat in (reach.proj.to_ll(x, y) for x, y, *_ in pts)]
+
+    return Result(status="sat", gates=gates, slot=m.eval(slot).as_long(), path=ll(fwd), back=ll(back))
+
+
+def bridge_stations(reach: Reach, min_dist: float) -> list[int]:
+    """Stations whose cross-section (|d| <= halfwidth) comes within min_dist of a bridge."""
+    from shapely.geometry import LineString
+    out = []
+    for j, s in enumerate(reach.stations):
+        cut = LineString([reach.point(j, -s.halfwidth), reach.point(j, s.halfwidth)]) if s.halfwidth > 0 \
+            else _pt(s.x, s.y)
+        if any(line.distance(cut) < min_dist for _, line in reach.bridges):
+            out.append(j)
+    return out
+
+
+def course_path(reach: Reach, gates: list[dict]):
+    """The flight path in local metres.
+
+    Forward: (x, y, alt, k, d) at every station from gate 1 to gate N, d and alt linear in k
+    between gates. Back: (x, y) on the center line from gate N's station down to gate 1's.
+    The loop closes with sideways moves within a single cross-section at each end.
+    """
+    fwd = []
+    for a, b in zip(gates, gates[1:]):
+        n = b["k"] - a["k"]
+        for j in range(a["k"], b["k"] + (b is gates[-1])):
+            f = (j - a["k"]) / n
+            dj = a["d"] + (b["d"] - a["d"]) * f
+            x, y = reach.point(j, dj)
+            fwd.append((x, y, a["alt"] + (b["alt"] - a["alt"]) * f, j, dj))
+    back = [reach.point(j, 0.0) for j in range(gates[-1]["k"], gates[0]["k"] - 1, -1)]
+    return fwd, back
+
+
+def verify_path(reach: Reach, gates: list[dict], params: Params, plans=(), tol: float = 1.0) -> list[str]:
+    """Independent check of the whole loop with exact geometry. Returns violations (empty = OK).
+
+    plans: shapely polygons (local metres) of the existing flight plans active in the chosen slot.
+    `tol` absorbs rounding (whole-metre offsets) and the 10 m station spacing on bends.
+    """
+    from shapely.geometry import LineString
+    fwd, back = course_path(reach, gates)
+    loop = [(x, y) for x, y, *_ in fwd] + list(back) + [fwd[0][:2]]
+    line = LineString(loop)
+    bad = []
+    # Distance to the banks: use the water area extended past the end bridges, because the
+    # reach's own clipped area has artificial edges at its ends that are not banks.
+    water = reach.banks_xy if reach.banks_xy is not None else reach.water_xy
+    if not water.buffer(-(params.bank - tol)).contains(line):
+        inner = water.buffer(-params.bank)
+        worst = max(inner.distance(_pt(x, y)) for x, y in loop)
+        bad.append(f"P1: path comes {worst:.1f} m closer to the bank than {params.bank} m")
+    for name, br in reach.bridges:
+        dist = br.distance(line)
+        if dist < params.bridge - tol:
+            bad.append(f"P2: path passes {dist:.1f} m from {name}")
+    for x, y, alt, *_ in fwd:
+        if not (params.alt_min <= alt <= params.alt_max and alt < 150):
+            bad.append(f"C4: altitude {alt} on the path")
+            break
+    for poly in plans:
+        dist = poly.distance(line)
+        if dist < PLAN_BUFFER - tol:
+            bad.append(f"P3: path passes {dist:.1f} m from an existing flight plan")
+    return bad
 
 
 def _pt(x, y):

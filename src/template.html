@@ -139,6 +139,7 @@ function render(idx) {
     facts.push(['先約で見送った週末', `${sc.slot.skipped} 回`]);
     const span = sc.gates[sc.gates.length - 1].s - sc.gates[0].s;
     facts.push(['コース（川沿い）', `${Math.round(span).toLocaleString()} m・ゲート ${sc.gates.length} 個`]);
+    if (sc.verified) facts.push(['飛行経路の検査', `Z3 で証明（10 m ごと）＋実際の線を形状で再検査：合格`]);
   }
   $('facts').innerHTML = facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
   drawCourse(sc);
@@ -149,10 +150,10 @@ function drawCourse(sc) {
   if (anim) cancelAnimationFrame(anim), anim = null;
   if (sc.status !== 'sat') return;
   const g = sc.gates;
-  const pts = g.map(x => [x.lat, x.lon]);
+  // The path Z3 proved (P1-P3) and shapely re-checked: gate to gate every 10 m, then back on the center line.
+  const pts = sc.path;
   L.polyline(pts, { color: css('--course'), weight: 4 }).addTo(course);
-  // Return leg: back down the center line, staying over the water.
-  const back = R.centerline.slice(g[0].k, g[g.length - 1].k + 1).reverse();
+  const back = sc.back;
   L.polyline(back, { color: css('--course'), weight: 2, dashArray: '2 6', opacity: .8 }).addTo(course);
   g.forEach(x => L.marker([x.lat, x.lon], {
     icon: L.divIcon({ className: '', html: `<div class="gate-label">${x.i}</div>`, iconSize: [22, 22], iconAnchor: [11, 11] })

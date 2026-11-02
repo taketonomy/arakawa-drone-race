@@ -126,6 +126,7 @@ class Reach:
     water_xy: object                      # shapely geometry, clipped to the reach
     bridges: list[tuple[str, LineString]] = field(default_factory=list)  # local xy
     end_names: tuple[str, str] = ("", "")
+    banks_xy: object = None   # water clipped 500 m beyond the reach: its edges near the reach are real banks
 
     @property
     def nx(self) -> float:  # unit normal (left of A -> B)
@@ -237,6 +238,10 @@ def build_reach(water_ll, bridges_ll, proj: LocalProj, step: float = 10.0,
         else:
             c0, c1 = seg.coords[0], seg.coords[-1]
             hw_safe = min(math.hypot(c0[0] - sx, c0[1] - sy), math.hypot(c1[0] - sx, c1[1] - sy))
+            # On a bend the cross-section is oblique, so its half length overstates the room.
+            # The distance to the nearest edge is a safe radius: by the triangle inequality a
+            # point at offset |d| is at least (hw - |d|) from the edge.
+            hw_safe = min(hw_safe, water_xy.boundary.distance(P))
         stations.append(Station(s=s_acc, x=sx, y=sy, halfwidth=hw_safe))
 
     box = Polygon([
@@ -245,7 +250,8 @@ def build_reach(water_ll, bridges_ll, proj: LocalProj, step: float = 10.0,
     ])
     near = [(n, l) for n, l in bridges_xy if l.intersects(box.buffer(300))]
     return Reach(proj=proj, stations=stations, step=step, ux=ux, uy=uy,
-                 water_xy=water_xy.intersection(box), bridges=near, end_names=(a[0], b[0]))
+                 water_xy=water_xy.intersection(box), bridges=near, end_names=(a[0], b[0]),
+                 banks_xy=water_xy.intersection(box.buffer(500)))
 
 
 def flight_plan_shapes(geojson: dict, proj: LocalProj):
