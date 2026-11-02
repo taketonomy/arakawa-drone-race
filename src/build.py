@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from shapely.geometry import Point, mapping
+from shapely.ops import unary_union
 
 sys.path.insert(0, str(Path(__file__).parent))
 from geo import LocalProj, bridges_from_overpass, build_reach, flight_plan_shapes, water_from_overpass  # noqa: E402
@@ -115,6 +116,9 @@ def main(argv=None):
         },
         "plans": [{"start": a.isoformat(timespec="minutes"), "end": b.isoformat(timespec="minutes"),
                    "geom": mapping(proj.geom_ll(poly))} for _, poly, a, b, hit in over_reach],
+        # All plan areas merged into one shape: 40+ overlapping translucent polygons would stack
+        # into an opaque layer and hide the river.
+        "plans_area": mapping(proj.geom_ll(unary_union([poly for _, poly, _, _, _ in over_reach]))) if over_reach else None,
         "slots": {"count": len(slots), "busy": sum(1 for n in per_slot if n)},
         "scenarios": scenarios,
         "labels": LABELS,

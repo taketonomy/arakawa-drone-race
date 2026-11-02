@@ -104,8 +104,10 @@ const R = DATA.reach;
 const water = L.geoJSON(R.water, { style: { color: css('--water'), weight: 1, fillOpacity: .25 } }).addTo(map);
 L.polyline(R.centerline, { color: css('--water'), weight: 1, dashArray: '4 6', opacity: .8 }).addTo(map);
 R.bridges.forEach(b => L.polyline(b.line, { color: '#555', weight: 4, opacity: .8 }).bindTooltip(b.name).addTo(map));
+// Fill the merged area once; draw each plan as a faint outline that carries its tooltip.
+if (DATA.plans_area) L.geoJSON(DATA.plans_area, { style: { stroke: false, fillColor: css('--plan'), fillOpacity: .18 }, interactive: false }).addTo(map);
 const plans = L.geoJSON({ type: 'FeatureCollection', features: DATA.plans.map(p => ({ type: 'Feature', geometry: p.geom, properties: p })) }, {
-  style: { color: css('--plan'), weight: 1, fillOpacity: .15 },
+  style: { color: css('--plan'), weight: 1, opacity: .45, fillOpacity: 0 },
   onEachFeature: (f, l) => l.bindTooltip(`既存の飛行計画 ${f.properties.start.replace('T', ' ')} 〜 ${f.properties.end.slice(11)}`)
 }).addTo(map);
 
