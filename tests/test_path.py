@@ -13,7 +13,8 @@ from solver import Params, bridge_stations, course_path, solve, verify_path  # n
 from test_course import LENGTH, _ll, synthetic_osm  # noqa: E402
 
 NECK = (1100.0, 1200.0)   # a narrow stretch, along-river metres
-NECK_HALF = 40.0          # half width there: 40 - bank 30 = 10 m, less than the 15 m swing
+NECK_HALF = 33.0          # half width there: 33 - bank 30 = 3 m. Gates swing >= 15 m to alternating
+                          # sides at most 250 m apart, so d changes >= 12 m over the 100 m neck: no path fits
 
 
 def necked_osm():
@@ -43,13 +44,14 @@ def necked():
     return _reach(necked_osm())
 
 
-def _k_at(reach, s):
-    return min(range(len(reach.stations)), key=lambda j: abs(reach.stations[j].s - s))
+@pytest.fixture(scope="module")
+def straight_course(straight):
+    return solve(straight, Params())
 
 
-def test_path_visits_every_station_and_passes_the_geometric_check(straight):
+def test_path_visits_every_station_and_passes_the_geometric_check(straight, straight_course):
     p = Params()
-    r = solve(straight, p)
+    r = straight_course
     assert r.status == "sat"
     fwd, back = course_path(straight, r.gates)
     ks = [k for *_, k, _ in fwd]
@@ -123,13 +125,14 @@ def test_flight_plan_between_gates_moves_the_date(straight):
     strip = {mid - 1, mid, mid + 1}
     p = Params(span_min=1100)
     assert solve(straight, Params(span_min=1100, path=False), blocked=[strip, set()]).slot == 0
+    assert solve(straight, p, blocked=[strip], optimize=False).status == "unsat"   # slot 0 alone: no course
     r = solve(straight, p, blocked=[strip, set()])
     assert r.status == "sat" and r.slot == 1
 
 
-def test_verifier_flags_a_path_that_leaves_the_safe_band(straight):
+def test_verifier_flags_a_path_that_leaves_the_safe_band(straight, straight_course):
     p = Params()
-    r = solve(straight, p)
+    r = straight_course
     bad = copy.deepcopy(r.gates)
     bad[1]["d"] = math.floor(straight.stations[bad[1]["k"]].halfwidth)   # right at the water edge
     assert any(v.startswith("P1") for v in verify_path(straight, bad, p))

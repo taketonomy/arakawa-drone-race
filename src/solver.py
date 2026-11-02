@@ -61,8 +61,11 @@ class Result:
     back: list[list[float]] = field(default_factory=list)   # [lat, lon] return leg on the center line
 
 
-def solve(reach: Reach, params: Params, blocked: list[set[int]] | None = None) -> Result:
-    """blocked[j] = station indices that clash with an existing flight plan in time slot j."""
+def solve(reach: Reach, params: Params, blocked: list[set[int]] | None = None, optimize: bool = True) -> Result:
+    """blocked[j] = station indices that clash with an existing flight plan in time slot j.
+
+    optimize=False only decides sat/unsat (no course is returned for sat): much faster.
+    """
     st = reach.stations
     M = len(st)
     N = params.gates
@@ -125,15 +128,18 @@ def solve(reach: Reach, params: Params, blocked: list[set[int]] | None = None) -
         def on_path(j):
             return z3.And(k[0] <= j, j <= k[N - 1])
 
-        # P1: on the leg from gate i to gate i+1, d(j) lies between d[i] and d[i+1], so
-        # |d(j)| <= max(|d[i]|, |d[i+1]|). Requiring both ends to fit within lims[j] at every
-        # station j on the leg is therefore sufficient, and stays linear. The return leg
-        # (d = 0) and the sideways moves at the two ends are covered too, because they need
-        # 0 <= lims[j] and |d| <= lims[k] respectively, which these constraints imply.
+        # P1: on the leg from gate i to gate i+1 the path is d(j) = (d[i] (k[i+1] - j) + d[i+1] (j - k[i])) / n
+        # with n = k[i+1] - k[i] > 0 (C5). Multiplying by n gives an exact condition at every
+        # station j on the leg: |num| <= lims[j] * n. It is nonlinear (gate offsets times gate
+        # positions); Z3 decides it over these bounded integers. The return leg (d = 0) and the
+        # sideways moves at the two ends need 0 <= lims[j] and |d| <= lims[k], which this implies
+        # at the gates themselves (j = k[i], k[i+1]).
         p1 = []
         for i in range(N - 1):
+            n = k[i + 1] - k[i]
             for j in range(M):
-                fit = z3.And(d[i] <= lims[j], d[i] >= -lims[j], d[i + 1] <= lims[j], d[i + 1] >= -lims[j])
+                num = d[i] * (k[i + 1] - j) + d[i + 1] * (j - k[i])   # = d(j) * n
+                fit = z3.And(num <= lims[j] * n, num >= -lims[j] * n)
                 p1.append(z3.Implies(z3.And(k[i] <= j, j <= k[i + 1]), fit))
         track("P1", z3.And(p1))
 
@@ -157,6 +163,8 @@ def solve(reach: Reach, params: Params, blocked: list[set[int]] | None = None) -
         chk.assert_and_track(cond, z3.Bool(name))
     if chk.check() != z3.sat:
         return Result(status="unsat", core=sorted(str(c) for c in chk.unsat_core()))
+    if not optimize:
+        return Result(status="sat")
 
     # 2) Pick the best one: earliest date, then the longest course, then the widest swings.
     opt = z3.Optimize()
