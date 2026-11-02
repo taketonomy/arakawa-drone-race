@@ -36,6 +36,7 @@ h1 { font-size: 20px; margin: 0 0 2px; letter-spacing: .02em; }
 label.slider { display: block; margin: 4px 0 14px; }
 label.slider b { font-variant-numeric: tabular-nums; }
 input[type=range] { width: 100%; accent-color: var(--course); }
+.ticks .edge { color: var(--fg, inherit); font-weight: 700; }
 .ticks { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 ul.rules { list-style: none; padding: 0; margin: 0 0 14px; }
 ul.rules li { display: flex; gap: 8px; padding: 5px 0; border-bottom: 1px dashed var(--line); font-size: 13px; }
@@ -104,8 +105,10 @@ const R = DATA.reach;
 const water = L.geoJSON(R.water, { style: { color: css('--water'), weight: 1, fillOpacity: .25 } }).addTo(map);
 L.polyline(R.centerline, { color: css('--water'), weight: 1, dashArray: '4 6', opacity: .8 }).addTo(map);
 R.bridges.forEach(b => L.polyline(b.line, { color: '#555', weight: 4, opacity: .8 }).bindTooltip(b.name).addTo(map));
+// Fill the merged area once; draw each plan as a faint outline that carries its tooltip.
+if (DATA.plans_area) L.geoJSON(DATA.plans_area, { style: { stroke: false, fillColor: css('--plan'), fillOpacity: .18 }, interactive: false }).addTo(map);
 const plans = L.geoJSON({ type: 'FeatureCollection', features: DATA.plans.map(p => ({ type: 'Feature', geometry: p.geom, properties: p })) }, {
-  style: { color: css('--plan'), weight: 1, fillOpacity: .15 },
+  style: { color: css('--plan'), weight: 1, opacity: .45, fillOpacity: 0 },
   onEachFeature: (f, l) => l.bindTooltip(`既存の飛行計画 ${f.properties.start.replace('T', ' ')} 〜 ${f.properties.end.slice(11)}`)
 }).addTo(map);
 
@@ -115,7 +118,8 @@ let anim = null, playing = true;
 const banks = DATA.scenarios.map(s => s.bank);
 const slider = $('bank');
 slider.min = 0; slider.max = banks.length - 1; slider.value = 0;
-$('ticks').innerHTML = banks.map(b => `<span>${b}</span>`).join('');
+const sw = DATA.switch || {};
+$('ticks').innerHTML = banks.map(b => `<span${b === sw.last_sat || b === sw.first_unsat ? ' class="edge" title="sat と unsat の境目"' : ''}>${b}</span>`).join('');
 
 function render(idx) {
   const sc = DATA.scenarios[idx];
@@ -139,6 +143,7 @@ function render(idx) {
     facts.push(['先約で見送った週末', `${sc.slot.skipped} 回`]);
     const span = sc.gates[sc.gates.length - 1].s - sc.gates[0].s;
     facts.push(['コース（川沿い）', `${Math.round(span).toLocaleString()} m・ゲート ${sc.gates.length} 個`]);
+    if (sc.verified) facts.push(['飛行経路の検査', `Z3 で証明（10 m ごと）＋実際の線を形状で再検査：合格`]);
   }
   $('facts').innerHTML = facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
   drawCourse(sc);
@@ -149,10 +154,10 @@ function drawCourse(sc) {
   if (anim) cancelAnimationFrame(anim), anim = null;
   if (sc.status !== 'sat') return;
   const g = sc.gates;
-  const pts = g.map(x => [x.lat, x.lon]);
+  // The path Z3 proved (P1-P3) and shapely re-checked: gate to gate every 10 m, then back on the center line.
+  const pts = sc.path;
   L.polyline(pts, { color: css('--course'), weight: 4 }).addTo(course);
-  // Return leg: back down the center line, staying over the water.
-  const back = R.centerline.slice(g[0].k, g[g.length - 1].k + 1).reverse();
+  const back = sc.back;
   L.polyline(back, { color: css('--course'), weight: 2, dashArray: '2 6', opacity: .8 }).addTo(course);
   g.forEach(x => L.marker([x.lat, x.lon], {
     icon: L.divIcon({ className: '', html: `<div class="gate-label">${x.i}</div>`, iconSize: [22, 22], iconAnchor: [11, 11] })

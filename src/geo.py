@@ -54,17 +54,26 @@ def _way_line(el) -> LineString | None:
     return LineString([(p["lon"], p["lat"]) for p in g])
 
 
-def water_from_overpass(osm: dict):
+OTHER_RIVERS = {"隅田川", "新河岸川", "中川", "綾瀬川", "旧中川", "石神井川", "芝川", "新芝川"}
+JOIN = 3e-5   # ~3 m in degrees: closes the hairline gaps between adjacent OSM river pieces
+MAIN_CHANNEL = 30.0   # m: channels narrower than twice this are side channels, not the river
+
+
+def water_from_overpass(osm: dict, river: str = "荒川"):
     """Build the water area (lon/lat) from an Overpass `out geom` response.
 
     Handles closed ways and multipolygon relations (outer/inner member ways are stitched).
+    Most of the Arakawa's surface in OSM is `water=river` with no name; only one piece is named.
+    Unnamed pieces are kept only where they connect to a piece named `river`; pieces named after
+    another river are dropped, and so is anything not connected (ponds, canals, other rivers).
     """
-    polys = []
+    polys, named = [], []
     for el in osm.get("elements", []):
         tags = el.get("tags", {})
         is_water = tags.get("natural") == "water" or tags.get("waterway") == "riverbank"
-        if not is_water:
+        if not is_water or tags.get("name") in OTHER_RIVERS:
             continue
+        n_before = len(polys)
         if el["type"] == "way":
             line = _way_line(el)
             if line is not None and line.is_closed and len(line.coords) >= 4:
@@ -85,9 +94,28 @@ def water_from_overpass(osm: dict):
                 hole = unary_union(list(polygonize(linemerge(inners))))
                 outer = outer.difference(hole)
             polys.append(outer)
+        if tags.get("name") == river:
+            named += polys[n_before:]
     if not polys:
         raise ValueError("no water polygons in the Overpass response")
-    return unary_union(polys).buffer(0)
+    if not named:
+        raise ValueError(f"no water element named {river}")
+    merged = unary_union([p.buffer(0) for p in polys]).buffer(JOIN).buffer(-JOIN)
+    seeds = unary_union(named)
+    # Side channels, canals and inlets touch the river too (綾瀬川 along the levee, 芝川, golf-course
+    # ponds). Peel MAIN_CHANNEL metres off every edge in a metric projection: anything narrower than
+    # twice that disappears, the main channel (>150 m wide) survives. Keep what is still connected
+    # to the named piece, grow it back, and cut it to the original shoreline.
+    c = seeds.centroid
+    proj = LocalProj(c.y, c.x)
+    m_xy, s_xy = proj.geom_xy(merged), proj.geom_xy(seeds)
+    core = m_xy.buffer(-MAIN_CHANNEL)
+    kept = [g for g in getattr(core, "geoms", [core]) if g.intersects(s_xy)]
+    if not kept:
+        raise ValueError(f"{river} is narrower than {2 * MAIN_CHANNEL:.0f} m everywhere")
+    river_xy = unary_union(kept).buffer(MAIN_CHANNEL + 5).intersection(m_xy)
+    parts = [g for g in getattr(river_xy, "geoms", [river_xy]) if g.area > 1000]
+    return proj.geom_ll(unary_union(parts)).buffer(0)
 
 
 def bridges_from_overpass(osm: dict) -> list[tuple[str, LineString]]:
@@ -126,6 +154,7 @@ class Reach:
     water_xy: object                      # shapely geometry, clipped to the reach
     bridges: list[tuple[str, LineString]] = field(default_factory=list)  # local xy
     end_names: tuple[str, str] = ("", "")
+    banks_xy: object = None   # water clipped 500 m beyond the reach: its edges near the reach are real banks
 
     @property
     def nx(self) -> float:  # unit normal (left of A -> B)
@@ -237,6 +266,10 @@ def build_reach(water_ll, bridges_ll, proj: LocalProj, step: float = 10.0,
         else:
             c0, c1 = seg.coords[0], seg.coords[-1]
             hw_safe = min(math.hypot(c0[0] - sx, c0[1] - sy), math.hypot(c1[0] - sx, c1[1] - sy))
+            # On a bend the cross-section is oblique, so its half length overstates the room.
+            # The distance to the nearest edge is a safe radius: by the triangle inequality a
+            # point at offset |d| is at least (hw - |d|) from the edge.
+            hw_safe = min(hw_safe, water_xy.boundary.distance(P))
         stations.append(Station(s=s_acc, x=sx, y=sy, halfwidth=hw_safe))
 
     box = Polygon([
@@ -245,7 +278,8 @@ def build_reach(water_ll, bridges_ll, proj: LocalProj, step: float = 10.0,
     ])
     near = [(n, l) for n, l in bridges_xy if l.intersects(box.buffer(300))]
     return Reach(proj=proj, stations=stations, step=step, ux=ux, uy=uy,
-                 water_xy=water_xy.intersection(box), bridges=near, end_names=(a[0], b[0]))
+                 water_xy=water_xy.intersection(box), bridges=near, end_names=(a[0], b[0]),
+                 banks_xy=water_xy.intersection(box.buffer(500)))
 
 
 def flight_plan_shapes(geojson: dict, proj: LocalProj):
