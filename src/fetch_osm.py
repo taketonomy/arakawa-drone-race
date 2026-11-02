@@ -15,6 +15,7 @@ BBOX = (35.735, 139.70, 35.800, 139.870)   # south, west, north, east — Arakaw
 ENDPOINTS = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
 ]
 
 QUERY = """
