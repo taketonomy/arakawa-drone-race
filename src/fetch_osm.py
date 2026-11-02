@@ -18,12 +18,15 @@ ENDPOINTS = [
     "https://overpass.private.coffee/api/interpreter",
 ]
 
+# Most of the Arakawa's water surface in OSM is `water=river` with no name; only one piece is
+# named 荒川. Fetch every river surface in the box; geo.water_from_overpass keeps the part that is
+# connected to the named piece (and drops the other named rivers).
 QUERY = """
 [out:json][timeout:180];
 (
-  relation["natural"="water"]["name"="荒川"]({b});
-  way["natural"="water"]["name"="荒川"]({b});
-  way["waterway"="riverbank"]["name"="荒川"]({b});
+  nwr["natural"="water"]["water"~"^(river|canal)$"]({b});
+  nwr["natural"="water"]["name"="荒川"]({b});
+  nwr["waterway"="riverbank"]({b});
 );
 out geom;
 (
@@ -55,7 +58,9 @@ def main() -> int:
         print("no water element named 荒川 in the response", file=sys.stderr)
         return 1
     out = ROOT / "data" / "osm_arakawa.json"
-    out.write_text(json.dumps(osm, ensure_ascii=False), encoding="utf-8")
+    tmp = out.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(osm, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(out)
     print(f"wrote {out} ({len(osm['elements'])} elements, {n_water} water)")
     return 0
 

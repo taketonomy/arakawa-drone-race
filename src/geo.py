@@ -54,17 +54,26 @@ def _way_line(el) -> LineString | None:
     return LineString([(p["lon"], p["lat"]) for p in g])
 
 
-def water_from_overpass(osm: dict):
+OTHER_RIVERS = {"隅田川", "新河岸川", "中川", "綾瀬川", "旧中川", "石神井川", "芝川", "新芝川"}
+JOIN = 3e-5   # ~3 m in degrees: closes the hairline gaps between adjacent OSM river pieces
+MAIN_CHANNEL = 30.0   # m: channels narrower than twice this are side channels, not the river
+
+
+def water_from_overpass(osm: dict, river: str = "荒川"):
     """Build the water area (lon/lat) from an Overpass `out geom` response.
 
     Handles closed ways and multipolygon relations (outer/inner member ways are stitched).
+    Most of the Arakawa's surface in OSM is `water=river` with no name; only one piece is named.
+    Unnamed pieces are kept only where they connect to a piece named `river`; pieces named after
+    another river are dropped, and so is anything not connected (ponds, canals, other rivers).
     """
-    polys = []
+    polys, named = [], []
     for el in osm.get("elements", []):
         tags = el.get("tags", {})
         is_water = tags.get("natural") == "water" or tags.get("waterway") == "riverbank"
-        if not is_water:
+        if not is_water or tags.get("name") in OTHER_RIVERS:
             continue
+        n_before = len(polys)
         if el["type"] == "way":
             line = _way_line(el)
             if line is not None and line.is_closed and len(line.coords) >= 4:
@@ -85,9 +94,28 @@ def water_from_overpass(osm: dict):
                 hole = unary_union(list(polygonize(linemerge(inners))))
                 outer = outer.difference(hole)
             polys.append(outer)
+        if tags.get("name") == river:
+            named += polys[n_before:]
     if not polys:
         raise ValueError("no water polygons in the Overpass response")
-    return unary_union(polys).buffer(0)
+    if not named:
+        raise ValueError(f"no water element named {river}")
+    merged = unary_union([p.buffer(0) for p in polys]).buffer(JOIN).buffer(-JOIN)
+    seeds = unary_union(named)
+    # Side channels, canals and inlets touch the river too (綾瀬川 along the levee, 芝川, golf-course
+    # ponds). Peel MAIN_CHANNEL metres off every edge in a metric projection: anything narrower than
+    # twice that disappears, the main channel (>150 m wide) survives. Keep what is still connected
+    # to the named piece, grow it back, and cut it to the original shoreline.
+    c = seeds.centroid
+    proj = LocalProj(c.y, c.x)
+    m_xy, s_xy = proj.geom_xy(merged), proj.geom_xy(seeds)
+    core = m_xy.buffer(-MAIN_CHANNEL)
+    kept = [g for g in getattr(core, "geoms", [core]) if g.intersects(s_xy)]
+    if not kept:
+        raise ValueError(f"{river} is narrower than {2 * MAIN_CHANNEL:.0f} m everywhere")
+    river_xy = unary_union(kept).buffer(MAIN_CHANNEL + 5).intersection(m_xy)
+    parts = [g for g in getattr(river_xy, "geoms", [river_xy]) if g.area > 1000]
+    return proj.geom_ll(unary_union(parts)).buffer(0)
 
 
 def bridges_from_overpass(osm: dict) -> list[tuple[str, LineString]]:
