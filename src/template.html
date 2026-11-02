@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>荒川ドローンレース</title>
+<style>/*LEAFLET_CSS*/</style>
+<style>
+:root {
+  --bg: #f7f7f5; --panel: #ffffff; --ink: #1d1d1b; --muted: #6b6b66; --line: #e3e2dc;
+  --water: #3b82c4; --course: #d9480f; --ok: #2b8a3e; --ng: #c92a2a; --plan: #e8a33d;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #141413; --panel: #1f1f1d; --ink: #ecebe6; --muted: #a3a29b; --line: #34332f;
+    --water: #5aa2e0; --course: #ff7a3d; --ok: #51cf66; --ng: #ff6b6b; --plan: #f0b75a;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #141413; --panel: #1f1f1d; --ink: #ecebe6; --muted: #a3a29b; --line: #34332f;
+  --water: #5aa2e0; --course: #ff7a3d; --ok: #51cf66; --ng: #ff6b6b; --plan: #f0b75a;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+  font: 14px/1.55 system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif; }
+.app { display: grid; grid-template-columns: 360px 1fr; height: 100%; }
+aside { background: var(--panel); border-right: 1px solid var(--line); padding: 20px 18px; overflow-y: auto; }
+#map { height: 100%; min-height: 360px; }
+h1 { font-size: 20px; margin: 0 0 2px; letter-spacing: .02em; }
+.sub { color: var(--muted); margin: 0 0 16px; font-size: 13px; }
+.status { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: 10px;
+  border: 1px solid var(--line); margin-bottom: 14px; }
+.badge { font-weight: 700; font-family: ui-monospace, Menlo, monospace; padding: 2px 10px; border-radius: 999px; color: #fff; }
+.badge.sat { background: var(--ok); } .badge.unsat { background: var(--ng); }
+.status p { margin: 0; font-size: 13px; }
+label.slider { display: block; margin: 4px 0 14px; }
+label.slider b { font-variant-numeric: tabular-nums; }
+input[type=range] { width: 100%; accent-color: var(--course); }
+.ticks { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+ul.rules { list-style: none; padding: 0; margin: 0 0 14px; }
+ul.rules li { display: flex; gap: 8px; padding: 5px 0; border-bottom: 1px dashed var(--line); font-size: 13px; }
+ul.rules li .m { width: 1.2em; flex: none; text-align: center; font-weight: 700; }
+ul.rules li.ok .m { color: var(--ok); } ul.rules li.ng { color: var(--ng); font-weight: 600; }
+dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; margin: 0 0 14px; font-size: 13px; }
+dt { color: var(--muted); } dd { margin: 0; font-variant-numeric: tabular-nums; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--muted); margin-bottom: 12px; }
+.legend i { display: inline-block; width: 14px; height: 4px; vertical-align: middle; margin-right: 4px; border-radius: 2px; }
+.note { font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 10px; }
+.gate-label { background: var(--course); color: #fff; border-radius: 50%; width: 22px; height: 22px;
+  display: grid; place-items: center; font: 700 12px/1 system-ui, sans-serif; border: 2px solid #fff; box-shadow: 0 1px 3px #0006; }
+.drone { font-size: 22px; line-height: 1; filter: drop-shadow(0 1px 2px #0008); }
+button { font: inherit; border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 8px; padding: 4px 10px; cursor: pointer; }
+@media (max-width: 760px) {
+  .app { grid-template-columns: 1fr; grid-template-rows: 55vh auto; }
+  aside { order: 2; border-right: 0; border-top: 1px solid var(--line); padding: 16px; }
+  #map { order: 1; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <h1>荒川ドローンレース</h1>
+    <p class="sub">コースは Z3 が設計する（架空の大会）</p>
+
+    <div class="status" id="status"></div>
+
+    <label class="slider">C2 岸（観客）からの距離：<b id="bankv"></b>
+      <input type="range" id="bank" step="1">
+      <div class="ticks" id="ticks"></div>
+    </label>
+
+    <ul class="rules" id="rules"></ul>
+
+    <dl id="facts"></dl>
+
+    <div class="legend">
+      <span><i style="background:var(--water)"></i>水面（区間）</span>
+      <span><i style="background:var(--course)"></i>Z3 のコース</span>
+      <span><i style="background:var(--plan)"></i>既存の飛行計画</span>
+      <span><i style="background:#555"></i>橋</span>
+    </div>
+    <p><button id="play">一時停止</button></p>
+
+    <p class="note">架空の大会で、実際の開催提案ではありません。法令の条件は単純化した仮説のルールです。<br>
+      出典：国土交通省 Project LINKS／G空間情報センター「無人航空機飛行計画データ」（公共データ利用規約 第1.0版）、
+      川と橋 © OpenStreetMap contributors（ODbL）、背景 地理院タイル。</p>
+  </aside>
+  <div id="map"></div>
+</div>
+<script>/*LEAFLET_JS*/</script>
+<script>
+const DATA = /*DATA*/null;
+const $ = (id) => document.getElementById(id);
+const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
+const map = L.map('map', { zoomControl: true });
+map.fitBounds(L.geoJSON(DATA.reach.water).getBounds(), { padding: [20, 20] });  // set the view before adding vector layers
+L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png', {
+  maxZoom: 18, attribution: '<a href="https://maps.gsi.go.jp/development/ichiran.html">地理院タイル</a> | © OpenStreetMap contributors'
+}).addTo(map);
+
+const R = DATA.reach;
+const water = L.geoJSON(R.water, { style: { color: css('--water'), weight: 1, fillOpacity: .25 } }).addTo(map);
+L.polyline(R.centerline, { color: css('--water'), weight: 1, dashArray: '4 6', opacity: .8 }).addTo(map);
+R.bridges.forEach(b => L.polyline(b.line, { color: '#555', weight: 4, opacity: .8 }).bindTooltip(b.name).addTo(map));
+const plans = L.geoJSON({ type: 'FeatureCollection', features: DATA.plans.map(p => ({ type: 'Feature', geometry: p.geom, properties: p })) }, {
+  style: { color: css('--plan'), weight: 1, fillOpacity: .15 },
+  onEachFeature: (f, l) => l.bindTooltip(`既存の飛行計画 ${f.properties.start.replace('T', ' ')} 〜 ${f.properties.end.slice(11)}`)
+}).addTo(map);
+
+const course = L.layerGroup().addTo(map);
+let anim = null, playing = true;
+
+const banks = DATA.scenarios.map(s => s.bank);
+const slider = $('bank');
+slider.min = 0; slider.max = banks.length - 1; slider.value = 0;
+$('ticks').innerHTML = banks.map(b => `<span>${b}</span>`).join('');
+
+function render(idx) {
+  const sc = DATA.scenarios[idx];
+  $('bankv').textContent = `${sc.bank} m`;
+  const ok = sc.status === 'sat';
+  $('status').innerHTML = `<span class="badge ${sc.status}">${sc.status}</span>` +
+    `<p>${ok ? '条件をすべて満たすコースが見つかりました。' : 'このルールの組み合わせでは、コースは<b>存在しない</b>ことが証明されました。'}</p>`;
+  const core = new Set(sc.core);
+  $('rules').innerHTML = Object.values(DATA.labels).map(t => {
+    const ng = core.has(t);
+    return `<li class="${ok ? 'ok' : (ng ? 'ng' : '')}"><span class="m">${ok ? '✓' : (ng ? '✕' : '·')}</span><span>${t}${ng ? '（衝突）' : ''}</span></li>`;
+  }).join('');
+  const facts = [
+    ['区間', `${R.ends[0]} 〜 ${R.ends[1]}`],
+    ['区間の長さ', `${R.length_m.toLocaleString()} m`],
+    ['水面の幅', `${R.halfwidth_min * 2}〜${R.halfwidth_max * 2} m`],
+    ['区間に重なる飛行計画', `${DATA.plans.length} 件（2024-11〜2025-06）`],
+  ];
+  if (ok && sc.slot) {
+    facts.push(['開催日時（Z3 が選択）', `${sc.slot.start.replace('T', ' ')}〜${sc.slot.end.slice(11)}`]);
+    facts.push(['先約で見送った週末', `${sc.slot.skipped} 回`]);
+    const span = sc.gates[sc.gates.length - 1].s - sc.gates[0].s;
+    facts.push(['コース（川沿い）', `${Math.round(span).toLocaleString()} m・ゲート ${sc.gates.length} 個`]);
+  }
+  $('facts').innerHTML = facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+  drawCourse(sc);
+}
+
+function drawCourse(sc) {
+  course.clearLayers();
+  if (anim) cancelAnimationFrame(anim), anim = null;
+  if (sc.status !== 'sat') return;
+  const g = sc.gates;
+  const pts = g.map(x => [x.lat, x.lon]);
+  L.polyline(pts, { color: css('--course'), weight: 4 }).addTo(course);
+  // Return leg: back down the center line, staying over the water.
+  const back = R.centerline.slice(g[0].k, g[g.length - 1].k + 1).reverse();
+  L.polyline(back, { color: css('--course'), weight: 2, dashArray: '2 6', opacity: .8 }).addTo(course);
+  g.forEach(x => L.marker([x.lat, x.lon], {
+    icon: L.divIcon({ className: '', html: `<div class="gate-label">${x.i}</div>`, iconSize: [22, 22], iconAnchor: [11, 11] })
+  }).bindTooltip(`ゲート ${x.i}｜高度 ${x.alt} m｜中心から ${x.d > 0 ? '左' : '右'} ${Math.abs(x.d).toFixed(0)} m`).addTo(course));
+  const loop = pts.concat(back, [pts[0]]);
+  const drone = L.marker(loop[0], { icon: L.divIcon({ className: '', html: '<div class="drone">🛸</div>', iconSize: [24, 24], iconAnchor: [12, 12] }), interactive: false }).addTo(course);
+  const seg = []; let total = 0;
+  for (let i = 1; i < loop.length; i++) { const d = map.distance(loop[i - 1], loop[i]); seg.push(d); total += d; }
+  const speed = 120; // m per second of animation (fast-forward)
+  let t0 = null, paused = 0;
+  function frame(ts) {
+    if (!playing) { paused = ts; anim = requestAnimationFrame(frame); return; }
+    if (t0 === null) t0 = ts;
+    if (paused) { t0 += ts - paused; paused = 0; }
+    let dist = ((ts - t0) / 1000 * speed) % total;
+    let i = 0;
+    while (i < seg.length && dist > seg[i]) dist -= seg[i++];
+    const a = loop[i], b = loop[i + 1] || loop[0], f = seg[i] ? dist / seg[i] : 0;
+    drone.setLatLng([a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f]);
+    anim = requestAnimationFrame(frame);
+  }
+  if (!matchMedia('(prefers-reduced-motion: reduce)').matches) anim = requestAnimationFrame(frame);
+}
+
+slider.addEventListener('input', () => render(+slider.value));
+$('play').addEventListener('click', () => { playing = !playing; $('play').textContent = playing ? '一時停止' : '再生'; });
+render(0);
+</script>
+</body>
+</html>
